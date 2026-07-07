@@ -1,0 +1,65 @@
+# Ignore build files
+### Python / Django ###
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+media/
+staticfiles/
+static_root/
+
+# Environnement / secrets
+.env
+.env.*
+!.env.example
+*.pem
+
+# Cache / outils
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+.cache
+
+### Archives et exports générés ###
+*.zip
+*.tar.gz
+seeg-deploy.zip
+
+### Android / Gradle ###
+mobile/android/local.properties
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/*/build/
+mobile/android/.idea/
+mobile/android/*.iml
+mobile/android/captures/
+mobile/android/.cxx/
+mobile/android/*.apk
+mobile/android/*.aab
+
+### IDE / OS ###
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+### Jupyter / divers ###
+.ipynb_checkpoints/
