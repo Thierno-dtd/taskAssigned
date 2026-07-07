@@ -63,3 +63,8 @@ Thumbs.db
 
 ### Jupyter / divers ###
 .ipynb_checkpoints/
+
+deploy/
+
+TUTORIEL.md
+FEATURES_SUMMARY.md
