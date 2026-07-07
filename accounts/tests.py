@@ -79,7 +79,7 @@ class AuthenticationAPITest(APITestCase):
             role='agent'
         )
         self.register_url = reverse('register')
-        self.login_url = reverse('token_obtain_pair')
+        self.login_url = reverse('login')
         self.profile_url = reverse('profile')
 
     def test_user_registration(self):
@@ -166,7 +166,8 @@ class AgentListAPITest(APITestCase):
         self.client.force_authenticate(user=self.admin)
         response = self.client.get(self.agents_url)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.data), 2)
+        self.assertEqual(response.data['count'], 2)
+        self.assertEqual(len(response.data['results']), 2)
 
     def test_agent_list_as_agent(self):
         self.client.force_authenticate(user=self.agent1)
@@ -176,4 +177,3 @@ class AgentListAPITest(APITestCase):
     def test_agent_list_unauthenticated(self):
         response = self.client.get(self.agents_url)
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
-

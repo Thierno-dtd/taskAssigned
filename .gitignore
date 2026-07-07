@@ -1,4 +1,3 @@
-# Ignore build files
 ### Python / Django ###
 __pycache__/
 *.py[cod]
@@ -19,6 +18,7 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 media/
+logs/
 staticfiles/
 static_root/
 
@@ -63,8 +63,3 @@ Thumbs.db
 
 ### Jupyter / divers ###
 .ipynb_checkpoints/
-
-deploy/
-
-TUTORIEL.md
-FEATURES_SUMMARY.md

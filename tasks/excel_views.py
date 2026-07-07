@@ -2,9 +2,14 @@
 Vues pour l'import/export Excel des tâches et agents.
 """
 import io
+import os
+import re
+import uuid
+import unicodedata
 from datetime import datetime
 
 import pandas as pd
+from django.conf import settings as django_settings
 from django.http import HttpResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -12,7 +17,7 @@ from rest_framework.response import Response
 from rest_framework import status
 
 from accounts.models import User, AgentProfile
-from tasks.models import Semaine, Tache, SousTache
+from tasks.models import Semaine, Tache, SousTache, ImportLot
 
 
 @api_view(['GET'])
@@ -255,3 +260,345 @@ def import_tasks_excel(request):
             {'error': f'Erreur lors de l\'import: {str(e)}'},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+
+# ---------------------------------------------------------------------------
+# NOUVEAU FLUX D'IMPORT DYNAMIQUE (superviseur non-informaticien)
+#
+# Étape 1 (analyser_fichier_excel)  : on lit juste les en-têtes + un aperçu,
+#   on stocke temporairement le fichier, on renvoie les colonnes trouvées
+#   pour que le superviseur choisisse quoi en faire dans l'app.
+# Étape 2 (confirmer_import_excel)  : le superviseur renvoie sa config
+#   (mapping des colonnes, colonnes obligatoires, colonnes visibles côté
+#   mobile) et on crée réellement les tâches.
+# ---------------------------------------------------------------------------
+
+IMPORT_TEMP_DIR = os.path.join(django_settings.MEDIA_ROOT, 'imports_temp')
+
+
+def _normaliser(texte):
+    """minuscule + sans accents + espaces compactés, pour comparer des noms"""
+    if texte is None:
+        return ''
+    texte = str(texte).strip().lower()
+    texte = unicodedata.normalize('NFKD', texte).encode('ascii', 'ignore').decode()
+    texte = re.sub(r'\s+', ' ', texte)
+    return texte
+
+
+def _valeur_json_safe(valeur):
+    """Convertit une cellule pandas (NaN, Timestamp, numpy...) en valeur JSON-safe."""
+    if valeur is None or (isinstance(valeur, float) and pd.isna(valeur)):
+        return None
+    if pd.isna(valeur):
+        return None
+    if isinstance(valeur, (pd.Timestamp, datetime)):
+        return valeur.isoformat()
+    if hasattr(valeur, 'item'):  # types numpy (int64, float64...)
+        return valeur.item()
+    return str(valeur) if not isinstance(valeur, (int, float, bool)) else valeur
+
+
+def _deviner_colonne(colonnes, mots_cles):
+    """Essaie de deviner quelle colonne correspond à un champ (ex: 'agent')."""
+    for col in colonnes:
+        col_norm = _normaliser(col)
+        for mot in mots_cles:
+            if mot in col_norm:
+                return col
+    return None
+
+
+def _trouver_agent(valeur_brute):
+    """
+    Retrouve un agent à partir d'une cellule Excel qui peut contenir :
+    le username, le matricule, ou le nom complet (dans un ordre ou l'autre).
+    Retourne (agent, erreur). agent=None si non trouvé ou ambigu.
+    """
+    if valeur_brute is None or str(valeur_brute).strip() == '':
+        return None, "valeur agent vide"
+
+    valeur = str(valeur_brute).strip()
+    valeur_norm = _normaliser(valeur)
+
+    # 1. Correspondance exacte sur le username
+    agent = User.objects.filter(
+        role='agent', username__iexact=valeur
+    ).first()
+    if agent:
+        return agent, None
+
+    # 2. Correspondance sur le matricule
+    profil = AgentProfile.objects.filter(matricule__iexact=valeur).first()
+    if profil:
+        return profil.user, None
+
+    # 3. Correspondance sur le nom complet (dans les deux sens)
+    candidats = []
+    for u in User.objects.filter(role='agent'):
+        nom_complet = _normaliser(f"{u.first_name} {u.last_name}")
+        nom_inverse = _normaliser(f"{u.last_name} {u.first_name}")
+        if valeur_norm in (nom_complet, nom_inverse) and valeur_norm:
+            candidats.append(u)
+
+    if len(candidats) == 1:
+        return candidats[0], None
+    if len(candidats) > 1:
+        return None, f"plusieurs agents correspondent à '{valeur}', préciser (username/matricule)"
+
+    return None, f"aucun agent trouvé pour '{valeur}'"
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def analyser_fichier_excel(request):
+    """
+    Étape 1 : le superviseur envoie juste le fichier Excel.
+    On lit les en-têtes + un aperçu des premières lignes, on stocke le
+    fichier temporairement, et on renvoie tout ça pour que l'app affiche
+    les colonnes et laisse le superviseur choisir sa configuration.
+    """
+    if request.user.role not in ['admin', 'manager']:
+        return Response({'error': 'Permission refusée'}, status=status.HTTP_403_FORBIDDEN)
+
+    if 'file' not in request.FILES:
+        return Response({'error': 'Fichier Excel requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+    excel_file = request.FILES['file']
+    if not excel_file.name.lower().endswith(('.xlsx', '.xls')):
+        return Response(
+            {'error': 'Seuls les fichiers .xlsx ou .xls sont acceptés'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        df = pd.read_excel(excel_file)
+    except Exception as e:
+        return Response(
+            {'error': f"Impossible de lire le fichier Excel : {e}"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if df.empty or len(df.columns) == 0:
+        return Response(
+            {'error': "Le fichier semble vide ou sans en-têtes de colonnes."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    colonnes = [str(c) for c in df.columns]
+
+    # Stockage temporaire du fichier pour l'étape de confirmation
+    os.makedirs(IMPORT_TEMP_DIR, exist_ok=True)
+    import_id = uuid.uuid4().hex
+    chemin_temp = os.path.join(IMPORT_TEMP_DIR, f"{import_id}.xlsx")
+    excel_file.seek(0)
+    with open(chemin_temp, 'wb') as f:
+        for chunk in excel_file.chunks():
+            f.write(chunk)
+
+    apercu = []
+    for _, row in df.head(5).iterrows():
+        apercu.append({col: _valeur_json_safe(row[col]) for col in colonnes})
+
+    suggestions = {
+        'agent': _deviner_colonne(colonnes, ['agent', 'technicien', 'nom agent', 'employe', 'nom']),
+        'titre': _deviner_colonne(colonnes, ['titre', 'tache', 'intitule', 'designation', 'objet']),
+        'description': _deviner_colonne(colonnes, ['description', 'detail', 'commentaire']),
+        'priorite': _deviner_colonne(colonnes, ['priorite', 'priority']),
+        'date_debut_prevue': _deviner_colonne(colonnes, ['date debut', 'debut prevu']),
+        'date_fin_prevue': _deviner_colonne(colonnes, ['date fin', 'fin prevue', 'echeance']),
+    }
+
+    return Response({
+        'import_id': import_id,
+        'nom_fichier': excel_file.name,
+        'colonnes': colonnes,
+        'total_lignes': len(df),
+        'apercu': apercu,
+        'suggestions': suggestions,
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def confirmer_import_excel(request):
+    """
+    Étape 2 : le superviseur confirme sa configuration :
+    {
+        "import_id": "...",
+        "semaine_id": 3,
+        "mapping": {
+            "agent": "Nom de l'agent",   # obligatoire
+            "titre": "Intitulé",         # optionnel
+            "description": "Détail",     # optionnel
+            "priorite": "Priorité",      # optionnel
+            "date_debut_prevue": "Début",# optionnel
+            "date_fin_prevue": "Fin"     # optionnel
+        },
+        "colonnes_obligatoires": ["Nom de l'agent", "Adresse"],
+        "colonnes_visibles_mobile": ["Adresse", "Compteur", "Zone"]
+    }
+    Toutes les colonnes du fichier sont conservées dans chaque tâche
+    (donnees_excel), mais seules celles listées dans
+    colonnes_visibles_mobile seront montrées à l'agent dans l'app mobile.
+    Les identifiants de tâche sont générés automatiquement, le superviseur
+    n'a jamais à les fournir.
+    """
+    if request.user.role not in ['admin', 'manager']:
+        return Response({'error': 'Permission refusée'}, status=status.HTTP_403_FORBIDDEN)
+
+    import_id = request.data.get('import_id')
+    semaine_id = request.data.get('semaine_id')
+    mapping = request.data.get('mapping') or {}
+    colonnes_obligatoires = request.data.get('colonnes_obligatoires') or []
+    colonnes_visibles_mobile = request.data.get('colonnes_visibles_mobile') or []
+
+    if not import_id:
+        return Response({'error': "import_id manquant"}, status=status.HTTP_400_BAD_REQUEST)
+    if not semaine_id:
+        return Response({'error': "semaine_id manquant"}, status=status.HTTP_400_BAD_REQUEST)
+    if 'agent' not in mapping or not mapping['agent']:
+        return Response(
+            {'error': "Le mapping doit indiquer quelle colonne identifie l'agent (mapping['agent'])"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        semaine = Semaine.objects.get(id=semaine_id)
+    except Semaine.DoesNotExist:
+        return Response({'error': f"Semaine {semaine_id} introuvable"}, status=status.HTTP_400_BAD_REQUEST)
+
+    chemin_temp = os.path.join(IMPORT_TEMP_DIR, f"{import_id}.xlsx")
+    if not os.path.exists(chemin_temp):
+        return Response(
+            {'error': "Session d'import expirée ou introuvable, merci de réimporter le fichier."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        df = pd.read_excel(chemin_temp)
+    except Exception as e:
+        return Response({'error': f"Impossible de relire le fichier : {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    colonnes_fichier = [str(c) for c in df.columns]
+
+    # Vérifier que les colonnes mappées et obligatoires existent bien dans le fichier
+    colonnes_attendues = set(mapping.values()) | set(colonnes_obligatoires) | set(colonnes_visibles_mobile)
+    colonnes_manquantes = [c for c in colonnes_attendues if c and c not in colonnes_fichier]
+    if colonnes_manquantes:
+        return Response(
+            {'error': f"Colonnes introuvables dans le fichier : {colonnes_manquantes}"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    lot = ImportLot.objects.create(
+        nom_fichier=os.path.basename(chemin_temp),
+        semaine=semaine,
+        importe_par=request.user,
+        toutes_colonnes=colonnes_fichier,
+        colonnes_obligatoires=colonnes_obligatoires,
+        colonnes_visibles_mobile=colonnes_visibles_mobile,
+        mapping=mapping,
+    )
+
+    created_count = 0
+    erreurs = []
+
+    for index, row in df.iterrows():
+        ligne_num = index + 2  # +1 pour l'en-tête, +1 pour l'index 0-based
+
+        # Colonnes obligatoires : toutes doivent être renseignées sur cette ligne
+        manquantes = [
+            col for col in colonnes_obligatoires
+            if pd.isna(row.get(col)) or str(row.get(col)).strip() == ''
+        ]
+        if manquantes:
+            erreurs.append(f"Ligne {ligne_num}: colonnes obligatoires vides {manquantes}")
+            continue
+
+        # Résolution de l'agent (username, matricule, ou nom complet)
+        agent, err = _trouver_agent(row.get(mapping['agent']))
+        if err:
+            erreurs.append(f"Ligne {ligne_num}: {err}")
+            continue
+
+        # Titre : colonne mappée si fournie, sinon généré automatiquement
+        colonne_titre = mapping.get('titre')
+        if colonne_titre and pd.notna(row.get(colonne_titre)) and str(row.get(colonne_titre)).strip():
+            titre = str(row.get(colonne_titre)).strip()
+        else:
+            titre = f"Tâche {agent.get_full_name() or agent.username} - Semaine {semaine.numero}"
+
+        description = ''
+        colonne_desc = mapping.get('description')
+        if colonne_desc and pd.notna(row.get(colonne_desc)):
+            description = str(row.get(colonne_desc))
+
+        priorite = 'medium'
+        colonne_priorite = mapping.get('priorite')
+        if colonne_priorite and pd.notna(row.get(colonne_priorite)):
+            val = _normaliser(row.get(colonne_priorite))
+            correspondance = {
+                'basse': 'low', 'low': 'low',
+                'moyenne': 'medium', 'medium': 'medium',
+                'haute': 'high', 'high': 'high',
+                'urgente': 'urgent', 'urgent': 'urgent',
+            }
+            priorite = correspondance.get(val, 'medium')
+
+        date_debut_prevue = None
+        colonne_deb = mapping.get('date_debut_prevue')
+        if colonne_deb and pd.notna(row.get(colonne_deb)):
+            try:
+                date_debut_prevue = pd.to_datetime(row.get(colonne_deb))
+            except Exception:
+                date_debut_prevue = None
+
+        date_fin_prevue = None
+        colonne_fin = mapping.get('date_fin_prevue')
+        if colonne_fin and pd.notna(row.get(colonne_fin)):
+            try:
+                date_fin_prevue = pd.to_datetime(row.get(colonne_fin))
+            except Exception:
+                date_fin_prevue = None
+
+        # Toutes les colonnes du fichier sont conservées (audit + dashboard),
+        # seul le sous-ensemble "colonnes_visibles_mobile" sera montré à l'agent
+        # (voir TacheDetailSerializer/TacheListSerializer).
+        donnees_excel = {col: _valeur_json_safe(row.get(col)) for col in colonnes_fichier}
+
+        try:
+            Tache.objects.create(
+                titre=titre,
+                description=description,
+                semaine=semaine,
+                assigne_a=agent,
+                created_by=request.user,
+                priorite=priorite,
+                status='pending',
+                date_debut_prevue=date_debut_prevue,
+                date_fin_prevue=date_fin_prevue,
+                lot_import=lot,
+                donnees_excel=donnees_excel,
+            )
+            created_count += 1
+        except Exception as e:
+            erreurs.append(f"Ligne {ligne_num}: {e}")
+
+    lot.nombre_taches_creees = created_count
+    lot.nombre_erreurs = len(erreurs)
+    lot.save(update_fields=['nombre_taches_creees', 'nombre_erreurs'])
+
+    # Nettoyage du fichier temporaire, plus besoin après confirmation
+    try:
+        os.remove(chemin_temp)
+    except OSError:
+        pass
+
+    return Response({
+        'success': True,
+        'lot_import_id': lot.id,
+        'created': created_count,
+        'total_rows': len(df),
+        'errors': erreurs,
+    })

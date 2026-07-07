@@ -4,11 +4,14 @@ from datetime import datetime
 
 from django.core.cache import cache
 from django.contrib.auth import get_user_model
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework_simplejwt.tokens import RefreshToken
+
+from .throttles import OtpRateThrottle
+from .sms import envoyer_sms, SmsSendError
 
 User = get_user_model()
 
@@ -22,20 +25,9 @@ def generate_otp():
     return ''.join(random.choices(string.digits, k=6))
 
 
-def send_sms_simulation(phone_number, otp_code):
-    """
-    Simule l'envoi d'un SMS.
-    En production, remplacer par une vraie intégration SMS.
-    """
-    print(f"\n{'='*50}")
-    print(f"[SMS] Envoye a {phone_number}")
-    print(f"[OTP] Code: {otp_code}")
-    print(f"{'='*50}\n")
-    return True
-
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([OtpRateThrottle])
 def request_otp(request):
     """
     Demande un code OTP par SMS.
@@ -82,8 +74,16 @@ def request_otp(request):
     # Incrémenter les tentatives
     cache.set(cache_key_attempts, attempts + 1, timeout=900)  # 15 min
 
-    # Simuler l'envoi SMS
-    send_sms_simulation(phone, otp_code)
+    # Envoi du SMS (réel si un fournisseur est configuré, simulé sinon)
+    try:
+        envoyer_sms(phone, f"Votre code SEEG : {otp_code} (valable {OTP_EXPIRY_MINUTES} min)")
+    except SmsSendError:
+        # On ne bloque pas l'utilisateur pour une raison qui ne dépend pas
+        # de lui, mais on l'informe que le SMS n'est peut-être pas arrivé.
+        return Response(
+            {'error': "Le service SMS est momentanément indisponible. Réessayez dans quelques instants."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
 
     return Response({
         'message': 'Code OTP envoyé avec succès',
@@ -94,6 +94,7 @@ def request_otp(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([OtpRateThrottle])
 def verify_otp(request):
     """
     Vérifie le code OTP et retourne les tokens JWT.
@@ -160,6 +161,7 @@ def verify_otp(request):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@throttle_classes([OtpRateThrottle])
 def resend_otp(request):
     """
     Renvoie un nouveau code OTP.
@@ -182,6 +184,7 @@ def resend_otp(request):
 
 @api_view(['POST'])
 @permission_classes([AllowAny])
+@throttle_classes([OtpRateThrottle])
 def verify_otp_and_login(request):
     """
     Vérifie OTP et met à jour le statut de l'agent.

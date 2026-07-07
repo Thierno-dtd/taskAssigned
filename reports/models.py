@@ -1,6 +1,8 @@
 from django.db import models
 from django.conf import settings
+from django.core.validators import FileExtensionValidator
 from tasks.models import Tache, SousTache
+from .validators import valider_taille_photo
 
 
 class RapportExecution(models.Model):
@@ -28,7 +30,11 @@ class RapportExecution(models.Model):
     # Pour les tâches terminées
     commentaire = models.TextField(blank=True, null=True)
     photo = models.ImageField(
-        upload_to='rapports/photos/%Y/%m/', blank=True, null=True
+        upload_to='rapports/photos/%Y/%m/', blank=True, null=True,
+        validators=[
+            FileExtensionValidator(['jpg', 'jpeg', 'png', 'webp']),
+            valider_taille_photo,
+        ]
     )
 
     # Pour les tâches non exécutées

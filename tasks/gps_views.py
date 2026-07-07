@@ -16,12 +16,9 @@ def map_tasks_data(request):
     Récupère les tâches avec coordonnées GPS pour affichage sur carte.
     Filtres: ?semaine_id=1&agent_id=2&status=pending
     """
-    queryset = Tache.objects.exclude(
-        gps_latitude__isnull=True,
-        gps_longitude__isnull=True
-    ).exclude(
-        gps_latitude='',
-        gps_longitude=''
+    queryset = Tache.objects.filter(
+        gps_latitude__isnull=False,
+        gps_longitude__isnull=False
     )
 
     # Filtres
@@ -119,7 +116,7 @@ def agent_tracking_data(request):
                     'id': agent.id,
                     'name': f"{agent.first_name} {agent.last_name}",
                     'phone': agent.phone,
-                    'matricule': agent.profile.matricule if hasattr(agent, 'profile') else None,
+                    'matricule': agent.agent_profile.matricule if hasattr(agent, 'agent_profile') else None,
                 },
                 'last_location': {
                     'latitude': float(last_task.gps_latitude),
@@ -128,8 +125,7 @@ def agent_tracking_data(request):
                     'task_title': last_task.titre,
                     'timestamp': last_task.date_realisation,
                 },
-                'status': 'active' if agent.profile.is_active else 'inactive'
-                if hasattr(agent, 'profile') else 'unknown',
+                'status': 'active' if agent.is_active else 'inactive',
             })
 
     return Response({
@@ -220,12 +216,9 @@ def nearby_tasks(request):
         )
 
     # Récupérer toutes les tâches avec coordonnées
-    queryset = Tache.objects.exclude(
-        gps_latitude__isnull=True,
-        gps_longitude__isnull=True
-    ).exclude(
-        gps_latitude='',
-        gps_longitude=''
+    queryset = Tache.objects.filter(
+        gps_latitude__isnull=False,
+        gps_longitude__isnull=False
     )
 
     # Filtrer par agent si nécessaire
