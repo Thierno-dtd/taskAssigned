@@ -1,0 +1,21 @@
+# Configuration locale pour Android SDK
+# Copiez ce fichier vers local.properties et modifiez les chemins
+
+# SDK Location (Windows)
+sdk.dir=C\\:\\Users\\\<nom_utilisateur>\\\AppData\\\Local\\\Android\\\Sdk
+
+# SDK Location (Mac/Linux)
+# sdk.dir=/Users/<nom_utilisateur>/Library/Android/sdk
+# sdk.dir=/home/<nom_utilisateur>/Android/Sdk
+
+# NDK Location (optionnel, si nécessaire)
+# ndk.dir=C\\:\\Users\\\<nom_utilisateur>\\\AppData\\\Local\\\Android\\\Sdk\\\ndk\\\<version>
+
+# Clé API Google Maps (Production)
+MAPS_API_KEY=VOTRE_CLE_API_GOOGLE_MAPS
+
+# URL de l'API Backend
+API_BASE_URL=https://api.seeg.ga/api/
+
+# Version de l'API
+API_VERSION=v1
