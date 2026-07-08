@@ -15,6 +15,7 @@ from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework import status
+from drf_spectacular.utils import extend_schema, OpenApiTypes, OpenApiExample, OpenApiParameter
 
 from accounts.models import User, AgentProfile
 from tasks.models import Semaine, Tache, SousTache, ImportLot
@@ -349,6 +350,35 @@ def _trouver_agent(valeur_brute):
     return None, f"aucun agent trouvé pour '{valeur}'"
 
 
+@extend_schema(
+    tags=['Import Excel'],
+    summary="Étape 1/2 : analyser un fichier Excel avant import",
+    description=(
+        "Le superviseur envoie uniquement le fichier. L'API lit les "
+        "en-têtes + un aperçu (5 lignes), stocke le fichier temporairement "
+        "(sous media/imports_temp/, purgé après 60 min si non confirmé), "
+        "et renvoie des suggestions de mapping de colonnes. "
+        "À utiliser avec `confirmer_import_excel` (étape 2)."
+    ),
+    request={'multipart/form-data': {
+        'type': 'object',
+        'properties': {'file': {'type': 'string', 'format': 'binary'}},
+        'required': ['file'],
+    }},
+    responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    examples=[OpenApiExample(
+        'Réponse succès',
+        value={
+            'import_id': 'a1b2c3d4e5f6...',
+            'nom_fichier': 'taches_semaine12.xlsx',
+            'colonnes': ['Nom Agent', 'Adresse', 'Compteur', 'Zone'],
+            'total_lignes': 42,
+            'apercu': [{'Nom Agent': 'Jean Dupont', 'Adresse': '...'}],
+            'suggestions': {'agent': 'Nom Agent', 'titre': None},
+        },
+        response_only=True,
+    )],
+)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def analyser_fichier_excel(request):
@@ -419,6 +449,42 @@ def analyser_fichier_excel(request):
     })
 
 
+@extend_schema(
+    tags=['Import Excel'],
+    summary="Étape 2/2 : confirmer le mapping et créer les tâches",
+    description=(
+        "Le superviseur choisit quelle colonne identifie l'agent "
+        "(obligatoire), quelles colonnes sont obligatoires par ligne, et "
+        "quelles colonnes seront visibles par l'agent dans l'app mobile. "
+        "Toutes les colonnes du fichier sont conservées dans "
+        "`donnees_excel` sur chaque tâche (audit/dashboard), seul le "
+        "sous-ensemble `colonnes_visibles_mobile` est renvoyé à l'agent. "
+        "C'est le superviseur qui décide, rien n'est filtré par défaut."
+    ),
+    request={'application/json': {
+        'type': 'object',
+        'properties': {
+            'import_id': {'type': 'string'},
+            'semaine_id': {'type': 'integer'},
+            'mapping': {
+                'type': 'object',
+                'description': "clé -> nom de colonne du fichier. 'agent' est obligatoire.",
+                'properties': {
+                    'agent': {'type': 'string'},
+                    'titre': {'type': 'string'},
+                    'description': {'type': 'string'},
+                    'priorite': {'type': 'string'},
+                    'date_debut_prevue': {'type': 'string'},
+                    'date_fin_prevue': {'type': 'string'},
+                },
+            },
+            'colonnes_obligatoires': {'type': 'array', 'items': {'type': 'string'}},
+            'colonnes_visibles_mobile': {'type': 'array', 'items': {'type': 'string'}},
+        },
+        'required': ['import_id', 'semaine_id', 'mapping'],
+    }},
+    responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+)
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 def confirmer_import_excel(request):

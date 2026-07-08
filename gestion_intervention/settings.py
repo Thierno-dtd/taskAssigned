@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/6.0/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+from decouple import config, Csv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -20,13 +21,20 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/6.0/howto/deployment/checklist/
 
+# Toutes les valeurs ci-dessous sont lues depuis un fichier .env à la racine
+# du projet (voir .env.example). Sans .env, les valeurs par défaut ci-dessous
+# s'appliquent (pratiques pour le dev local, à ne jamais utiliser en prod).
+
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-smy2ltph$60z1@c77&d99*967^k5%rzb(kh65^7@%16x%0@($9'
+SECRET_KEY = config(
+    'SECRET_KEY',
+    default='django-insecure-smy2ltph$60z1@c77&d99*967^k5%rzb(kh65^7@%16x%0@($9'
+)
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=True, cast=bool)
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', default='localhost,127.0.0.1', cast=Csv())
 
 
 # Application definition
@@ -135,14 +143,36 @@ MEDIA_ROOT = BASE_DIR / 'media'
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 
-# CORS Settings
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:8080",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:8080",
-]
+# CORS Settings (surchargé par CORS_ALLOWED_ORIGINS dans .env en prod)
+CORS_ALLOWED_ORIGINS = config(
+    'CORS_ALLOWED_ORIGINS',
+    default='http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080',
+    cast=Csv()
+)
 CORS_ALLOW_CREDENTIALS = True
+
+# Cache (utilisé notamment pour stocker les codes OTP, voir accounts/otp_views.py)
+# IMPORTANT : sans REDIS_URL configuré, Django utilise un cache en mémoire
+# locale (LocMemCache) par process. En dev (1 seul process) ça marche très
+# bien. En PRODUCTION avec Gunicorn en plusieurs workers, chaque worker aurait
+# son propre cache isolé : une requête OTP traitée par le worker 1 et vérifiée
+# par le worker 2 échouerait au hasard. Toujours configurer REDIS_URL en prod.
+REDIS_URL = config('REDIS_URL', default='')
+if REDIS_URL:
+    CACHES = {
+        'default': {
+            'BACKEND': 'django_redis.cache.RedisCache',
+            'LOCATION': REDIS_URL,
+            'OPTIONS': {'CLIENT_CLASS': 'django_redis.client.DefaultClient'},
+        }
+    }
+# sinon : LocMemCache par défaut (fourni nativement par Django), suffisant en dev.
+
+# SMS (OTP) — voir accounts/sms.py pour le détail du branchement fournisseur.
+# Vide par défaut = mode simulation (SMS affiché en console), pratique en dev.
+SMS_PROVIDER_URL = config('SMS_PROVIDER_URL', default='')
+SMS_PROVIDER_API_KEY = config('SMS_PROVIDER_API_KEY', default='')
+SMS_SENDER_ID = config('SMS_SENDER_ID', default='SEEG')
 
 # Logging
 LOGGING = {

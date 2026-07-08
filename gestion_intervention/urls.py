@@ -43,6 +43,13 @@ def health_check(request):
     )
 
 
+api_endpoints = [
+    path('auth/', include('accounts.urls')),
+    path('', include('tasks.urls')),
+    path('', include('reports.urls')),
+    path('', include('dashboard.urls')),
+]
+
 urlpatterns = [
     path('admin/', admin.site.urls),
 
@@ -52,11 +59,15 @@ urlpatterns = [
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
     path('api/docs/', SpectacularSwaggerView.as_view(), name='docs'),
 
-    # API Endpoints
-    path('api/auth/', include('accounts.urls')),
-    path('api/', include('tasks.urls')),
-    path('api/', include('reports.urls')),
-    path('api/', include('dashboard.urls')),
+    # API versionnée (canonique) : c'est CE préfixe que le web React et
+    # l'app Android doivent utiliser (le mobile a déjà API_VERSION="v1"
+    # dans son build.gradle.kts, il ne restait qu'à l'exposer côté Django).
+    path('api/v1/', include(api_endpoints)),
+
+    # Alias non versionné, conservé pour compatibilité avec les scripts/
+    # exemples existants (README, API_GUIDE). À retirer une fois que tout
+    # le monde consomme /api/v1/.
+    path('api/', include(api_endpoints)),
 ]
 
 # Media files in development
