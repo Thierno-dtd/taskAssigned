@@ -1,60 +1,57 @@
 """
-Configuration de production pour SEEG Intervention Django
+Configuration de production pour SEEG Intervention Django.
+
+Toutes les valeurs viennent du .env (via python-decouple, cohérent avec
+settings.py) — plus aucun identifiant en dur dans le code source. Les
+secrets (SECRET_KEY, DB_PASSWORD...) n'ont AUCUNE valeur par défaut ici :
+le démarrage plante volontairement si le .env de prod est incomplet,
+plutôt que de retomber silencieusement sur un identifiant faible connu
+de tous ceux qui ont lu ce fichier sur GitHub.
 """
 
-import os
-from pathlib import Path
+from decouple import config, Csv
 from .settings import *
 
 # Security
-DEBUG = os.environ.get('DEBUG', 'False').lower() == 'true'
-SECRET_KEY = os.environ.get('SECRET_KEY', 'votre-cle-secrete-tres-longue-et-aleatoire-a-changer-en-production')
-ALLOWED_HOSTS = os.environ.get('ALLOWED_HOSTS', 'api.seeg.ga,localhost,127.0.0.1').split(',')
+DEBUG = config('DEBUG', default=False, cast=bool)
+SECRET_KEY = config('SECRET_KEY')  # pas de défaut : obligatoire en prod
+ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())  # pas de défaut : obligatoire
 
-# Database - PostgreSQL
-db_name = os.environ.get('DB_NAME', 'seeg')
-db_user = os.environ.get('DB_USER', 'obrice')
-db_password = os.environ.get('DB_PASSWORD', 'azerty')
-db_host = os.environ.get('DB_HOST', 'localhost')
-db_port = os.environ.get('DB_PORT', '5432')
-
+# Database - PostgreSQL (aucun identifiant par défaut, doit venir du .env)
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': db_name,
-        'USER': db_user,
-        'PASSWORD': db_password,
-        'HOST': db_host,
-        'PORT': db_port,
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST', default='localhost'),
+        'PORT': config('DB_PORT', default='5432'),
     }
 }
 
-# Static files - DocumentRoot Apache /var/www/html/seeg
-STATIC_ROOT = os.environ.get('STATIC_ROOT', '/var/www/html/seeg/static')
-MEDIA_ROOT = os.environ.get('MEDIA_ROOT', '/var/www/html/seeg/media')
+# Static files - DocumentRoot Apache (chemin par défaut cohérent avec
+# deploy/debian13/install.sh, surchargeable si autre config serveur)
+STATIC_ROOT = config('STATIC_ROOT', default='/var/www/html/seeg/static')
+MEDIA_ROOT = config('MEDIA_ROOT', default='/var/www/html/seeg/media')
 
-# CORS Settings
-cors_origins = os.environ.get('CORS_ALLOWED_ORIGINS', 'https://app.seeg.ga,https://admin.seeg.ga')
-if cors_origins:
-    CORS_ALLOWED_ORIGINS = cors_origins.split(',')
-
-csrf_origins = os.environ.get('CSRF_TRUSTED_ORIGINS', 'https://api.seeg.ga')
-if csrf_origins:
-    CSRF_TRUSTED_ORIGINS = csrf_origins.split(',')
+# CORS / CSRF : pas de défaut = obligatoire en prod (le domaine du front
+# React et de l'API doivent être explicitement déclarés, jamais devinés)
+CORS_ALLOWED_ORIGINS = config('CORS_ALLOWED_ORIGINS', cast=Csv())
+CSRF_TRUSTED_ORIGINS = config('CSRF_TRUSTED_ORIGINS', cast=Csv())
 
 # Security headers
-SECURE_SSL_REDIRECT = os.environ.get('SECURE_SSL_REDIRECT', 'True').lower() == 'true'
-SESSION_COOKIE_SECURE = os.environ.get('SESSION_COOKIE_SECURE', 'True').lower() == 'true'
-CSRF_COOKIE_SECURE = os.environ.get('CSRF_COOKIE_SECURE', 'True').lower() == 'true'
+SECURE_SSL_REDIRECT = config('SECURE_SSL_REDIRECT', default=True, cast=bool)
+SESSION_COOKIE_SECURE = config('SESSION_COOKIE_SECURE', default=True, cast=bool)
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=True, cast=bool)
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 X_FRAME_OPTIONS = 'DENY'
 
-# Email configuration
-EMAIL_BACKEND = os.environ.get('EMAIL_BACKEND', 'django.core.mail.backends.smtp.EmailBackend')
-EMAIL_HOST = os.environ.get('EMAIL_HOST', 'smtp.gmail.com')
-EMAIL_PORT = int(os.environ.get('EMAIL_PORT', '587'))
-EMAIL_USE_TLS = os.environ.get('EMAIL_USE_TLS', 'True').lower() == 'true'
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
-DEFAULT_FROM_EMAIL = os.environ.get('DEFAULT_FROM_EMAIL', 'noreply@seeg.ga')
+# Email configuration (optionnel, pas encore utilisé par le code applicatif)
+EMAIL_BACKEND = config('EMAIL_BACKEND', default='django.core.mail.backends.smtp.EmailBackend')
+EMAIL_HOST = config('EMAIL_HOST', default='smtp.gmail.com')
+EMAIL_PORT = config('EMAIL_PORT', default=587, cast=int)
+EMAIL_USE_TLS = config('EMAIL_USE_TLS', default=True, cast=bool)
+EMAIL_HOST_USER = config('EMAIL_HOST_USER', default='')
+EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD', default='')
+DEFAULT_FROM_EMAIL = config('DEFAULT_FROM_EMAIL', default='noreply@seeg.ga')

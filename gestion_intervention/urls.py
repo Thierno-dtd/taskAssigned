@@ -67,7 +67,7 @@ urlpatterns = [
     # Alias non versionné, conservé pour compatibilité avec les scripts/
     # exemples existants (README, API_GUIDE). À retirer une fois que tout
     # le monde consomme /api/v1/.
-    path('api/', include(api_endpoints)),
+    #path('api/', include(api_endpoints)),
 ]
 
 # Media files in development
