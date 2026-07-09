@@ -1,4 +1,6 @@
 from rest_framework import serializers
+from drf_spectacular.utils import extend_schema_field
+from drf_spectacular.types import OpenApiTypes
 from .models import Semaine, Tache, SousTache, ImportLot, Notification
 
 
@@ -75,9 +77,10 @@ class TacheListSerializer(serializers.ModelSerializer):
             'sous_taches_count', 'sous_taches_terminees', 'donnees_visibles'
         ]
 
-    def get_sous_taches_terminees(self, obj):
+    def get_sous_taches_terminees(self, obj) -> int:
         return obj.sous_taches.filter(status='completed').count()
 
+    @extend_schema_field(OpenApiTypes.OBJECT)
     def get_donnees_visibles(self, obj):
         return _donnees_excel_pour_utilisateur(obj, self.context.get('request'))
 
@@ -104,6 +107,7 @@ class TacheDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ['created_by', 'date_creation']
 
+    @extend_schema_field(OpenApiTypes.OBJECT)
     def get_assigne_a(self, obj):
         return {
             'id': obj.assigne_a.id,
@@ -111,6 +115,7 @@ class TacheDetailSerializer(serializers.ModelSerializer):
             'username': obj.assigne_a.username
         }
 
+    @extend_schema_field(OpenApiTypes.OBJECT)
     def get_donnees_visibles(self, obj):
         return _donnees_excel_pour_utilisateur(obj, self.context.get('request'))
 

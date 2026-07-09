@@ -7,16 +7,16 @@ class RapportExecutionSerializer(serializers.ModelSerializer):
         source='get_type_rapport_display', read_only=True
     )
     categorie_raison_display = serializers.CharField(
-        source='get_categorie_raison_display', read_only=True
+        source='get_categorie_raison_display', read_only=True, allow_null=True
     )
     agent_nom = serializers.CharField(
         source='agent.get_full_name', read_only=True
     )
     tache_titre = serializers.CharField(
-        source='tache.titre', read_only=True
+        source='tache.titre', read_only=True, allow_null=True
     )
     sous_tache_titre = serializers.CharField(
-        source='sous_tache.titre', read_only=True
+        source='sous_tache.titre', read_only=True, allow_null=True
     )
 
     class Meta:

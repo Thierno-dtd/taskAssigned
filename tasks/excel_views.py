@@ -11,6 +11,7 @@ from datetime import datetime
 import pandas as pd
 from django.conf import settings as django_settings
 from django.http import HttpResponse
+from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
@@ -19,6 +20,20 @@ from drf_spectacular.utils import extend_schema, OpenApiTypes, OpenApiExample, O
 
 from accounts.models import User, AgentProfile
 from tasks.models import Semaine, Tache, SousTache, ImportLot
+
+
+def _sans_fuseau(dt):
+    """
+    Convertit un datetime timezone-aware en datetime naïf (heure locale),
+    car Excel/openpyxl ne supporte pas les datetimes avec fuseau horaire
+    (ValueError sinon). Django utilise des datetimes aware partout
+    (USE_TZ=True), donc indispensable avant toute écriture dans un .xlsx.
+    """
+    if dt is None:
+        return None
+    if timezone.is_aware(dt):
+        return timezone.localtime(dt).replace(tzinfo=None)
+    return dt
 
 
 @api_view(['GET'])
@@ -36,8 +51,18 @@ def export_tasks_excel(request):
     status_filter = request.query_params.get('status')
 
     if semaine_id:
+        if not semaine_id.isdigit():
+            return Response(
+                {'error': "semaine_id doit être un nombre entier."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         queryset = queryset.filter(semaine_id=semaine_id)
     if agent_id:
+        if not agent_id.isdigit():
+            return Response(
+                {'error': "agent_id doit être un nombre entier."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
         queryset = queryset.filter(assigne_a_id=agent_id)
     if status_filter:
         queryset = queryset.filter(status=status_filter)
@@ -63,9 +88,9 @@ def export_tasks_excel(request):
             'Agent': agent_name,
             'Priorité': tache.get_priorite_display(),
             'Statut': tache.get_status_display(),
-            'Date début prévue': tache.date_debut_prevue,
-            'Date fin prévue': tache.date_fin_prevue,
-            'Date réalisation': tache.date_realisation,
+            'Date début prévue': _sans_fuseau(tache.date_debut_prevue),
+            'Date fin prévue': _sans_fuseau(tache.date_fin_prevue),
+            'Date réalisation': _sans_fuseau(tache.date_realisation),
             'Sous-tâches': f"{sous_taches_done}/{sous_taches_count}",
             'GPS Latitude': float(tache.gps_latitude) if tache.gps_latitude else None,
             'GPS Longitude': float(tache.gps_longitude) if tache.gps_longitude else None,
@@ -129,8 +154,8 @@ def export_agents_excel(request):
             'Téléphone': agent.user.phone,
             'Zone': agent.zone_intervention,
             'Date embauche': agent.date_embauche,
-            'Actif': 'Oui' if agent.is_active else 'Non',
-            'Dernière connexion': agent.user.last_login,
+            'Actif': 'Oui' if agent.user.is_active_agent else 'Non',
+            'Dernière connexion': _sans_fuseau(agent.user.last_login),
         })
 
     df = pd.DataFrame(data)
