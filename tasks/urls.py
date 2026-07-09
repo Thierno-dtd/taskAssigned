@@ -11,7 +11,8 @@ from .views import (
 )
 from .excel_views import (
     export_tasks_excel, export_agents_excel, import_tasks_excel,
-    analyser_fichier_excel, confirmer_import_excel
+    analyser_fichier_excel, verifier_agents_excel,
+    resoudre_agents_excel, confirmer_import_excel
 )
 from .gps_views import (
     map_tasks_data, agent_tracking_data, update_task_location, nearby_tasks
@@ -42,6 +43,8 @@ urlpatterns = [
     path('export/agents/', export_agents_excel, name='export_agents'),
     path('import/taches/', import_tasks_excel, name='import_tasks'),
     path('import/excel/analyser/', analyser_fichier_excel, name='import_excel_analyser'),
+    path('import/excel/verifier-agents/', verifier_agents_excel, name='import_excel_verifier_agents'),
+    path('import/excel/resoudre-agents/', resoudre_agents_excel, name='import_excel_resoudre_agents'),
     path('import/excel/confirmer/', confirmer_import_excel, name='import_excel_confirmer'),
     path('import/lots/', ImportLotListView.as_view(), name='import_lot_list'),
     path('import/lots/<int:pk>/', ImportLotDetailView.as_view(), name='import_lot_detail'),

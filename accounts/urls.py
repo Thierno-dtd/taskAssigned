@@ -3,7 +3,8 @@ from rest_framework_simplejwt.views import TokenRefreshView
 
 from .views import (
     RegisterView, CustomTokenObtainPairView,
-    UserProfileView, AgentListView, AgentDetailView
+    UserProfileView, AgentListView, AgentDetailView,
+    ManagerCreateView, ChangeUserRoleView
 )
 from .otp_views import (
     request_otp, verify_otp, resend_otp, verify_otp_and_login
@@ -16,6 +17,10 @@ urlpatterns = [
     path('profile/', UserProfileView.as_view(), name='profile'),
     path('agents/', AgentListView.as_view(), name='agent_list'),
     path('agents/<int:pk>/', AgentDetailView.as_view(), name='agent_detail'),
+
+    # Gestion des rôles — réservé à l'admin
+    path('admin/managers/', ManagerCreateView.as_view(), name='create_manager'),
+    path('admin/users/<int:pk>/role/', ChangeUserRoleView.as_view(), name='change_user_role'),
     # OTP Authentication
     path('otp/request/', request_otp, name='otp_request'),
     path('otp/verify/', verify_otp, name='otp_verify'),

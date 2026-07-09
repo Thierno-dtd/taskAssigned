@@ -285,4 +285,5 @@ SPECTACULAR_SETTINGS = {
     'TITLE': 'Gestion Intervention API',
     'DESCRIPTION': 'API pour la gestion des tâches terrain',
     'VERSION': '1.0.0',
+    'SCHEMA_PATH_PREFIX': '/api/v1',
 }

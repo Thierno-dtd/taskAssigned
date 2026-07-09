@@ -4,9 +4,11 @@ Vues pour l'import/export Excel des tâches et agents.
 import io
 import os
 import re
+import secrets
 import uuid
 import unicodedata
 from datetime import datetime
+from difflib import get_close_matches
 
 import pandas as pd
 from django.conf import settings as django_settings
@@ -335,17 +337,32 @@ def _deviner_colonne(colonnes, mots_cles):
     return None
 
 
-def _trouver_agent(valeur_brute):
+def _trouver_agent(valeur_brute, resolutions=None):
     """
     Retrouve un agent à partir d'une cellule Excel qui peut contenir :
     le username, le matricule, ou le nom complet (dans un ordre ou l'autre).
     Retourne (agent, erreur). agent=None si non trouvé ou ambigu.
+
+    `resolutions` (optionnel) : dict {valeur_normalisee: agent_id} issu
+    de resoudre_agents_excel — résolutions manuelles choisies par le
+    gestionnaire pour les valeurs que la recherche automatique ne
+    trouvait pas. Vérifié en priorité avant toute recherche.
     """
     if valeur_brute is None or str(valeur_brute).strip() == '':
         return None, "valeur agent vide"
 
     valeur = str(valeur_brute).strip()
     valeur_norm = _normaliser(valeur)
+
+    # 0. Résolution manuelle fournie par le gestionnaire (priorité absolue)
+    if resolutions and valeur_norm in resolutions:
+        try:
+            return User.objects.get(id=resolutions[valeur_norm], role='agent'), None
+        except User.DoesNotExist:
+            return None, (
+                f"résolution fournie pour '{valeur}' invalide "
+                f"(agent_id {resolutions[valeur_norm]} introuvable)"
+            )
 
     # 1. Correspondance exacte sur le username
     agent = User.objects.filter(
@@ -476,6 +493,282 @@ def analyser_fichier_excel(request):
 
 @extend_schema(
     tags=['Import Excel'],
+    summary="Étape 2/3 (optionnelle) : vérifier les agents avant import",
+    description=(
+        "Une fois que le superviseur a choisi quelle colonne identifie "
+        "l'agent (via les suggestions de l'étape 1), cet endpoint scanne "
+        "toutes les valeurs uniques de cette colonne et distingue : les "
+        "agents déjà reconnus (résolution automatique par username, "
+        "matricule ou nom complet), et les valeurs non reconnues, pour "
+        "lesquelles on propose des suggestions de correspondance proche "
+        "(ex: faute de frappe, variante d'écriture du nom). Le "
+        "superviseur peut alors, pour chaque valeur non reconnue, soit "
+        "confirmer une suggestion, soit demander la création d'un "
+        "nouvel agent (voir resoudre_agents_excel), avant de relancer "
+        "l'import définitif."
+    ),
+    request={'application/json': {
+        'type': 'object',
+        'properties': {
+            'import_id': {'type': 'string'},
+            'colonne_agent': {'type': 'string', 'description': "Nom de la colonne du fichier qui identifie l'agent"},
+        },
+        'required': ['import_id', 'colonne_agent'],
+    }},
+    responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+    examples=[OpenApiExample(
+        'Réponse',
+        value={
+            'import_id': 'a1b2c3d4...',
+            'agents_reconnus': [
+                {'valeur_fichier': 'Jean Dupont', 'agent_id': 3, 'agent_nom': 'Jean Dupont'}
+            ],
+            'agents_a_resoudre': [
+                {
+                    'valeur_fichier': 'J. Dupont',
+                    'suggestions': [
+                        {'agent_id': 3, 'agent_nom': 'Jean Dupont', 'username': 'agent1', 'matricule': 'AG001'}
+                    ],
+                }
+            ],
+        },
+        response_only=True,
+    )],
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verifier_agents_excel(request):
+    """
+    Étape 2/3 (optionnelle mais recommandée) : vérifie en amont toutes
+    les valeurs uniques de la colonne agent choisie, et prépare les
+    suggestions pour les valeurs non reconnues.
+    """
+    if request.user.role not in ['admin', 'manager']:
+        return Response({'error': 'Permission refusée'}, status=status.HTTP_403_FORBIDDEN)
+
+    import_id = request.data.get('import_id')
+    colonne_agent = request.data.get('colonne_agent')
+
+    if not import_id or not colonne_agent:
+        return Response(
+            {'error': "import_id et colonne_agent sont requis"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    chemin_temp = os.path.join(IMPORT_TEMP_DIR, f"{import_id}.xlsx")
+    if not os.path.exists(chemin_temp):
+        return Response(
+            {'error': "Session d'import expirée ou introuvable, merci de réimporter le fichier."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    try:
+        df = pd.read_excel(chemin_temp)
+    except Exception as e:
+        return Response({'error': f"Impossible de relire le fichier : {e}"}, status=status.HTTP_400_BAD_REQUEST)
+
+    if colonne_agent not in df.columns:
+        return Response(
+            {'error': f"Colonne '{colonne_agent}' introuvable dans le fichier"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    valeurs_uniques = [
+        v for v in df[colonne_agent].dropna().astype(str).str.strip().unique() if v
+    ]
+
+    # Index de comparaison pour le fuzzy matching : username, matricule
+    # et nom complet (dans les deux sens) de tous les agents.
+    index_candidats = {}
+    for u in User.objects.filter(role='agent').select_related('agent_profile'):
+        index_candidats[_normaliser(u.username)] = u
+        index_candidats[_normaliser(f"{u.first_name} {u.last_name}")] = u
+        index_candidats[_normaliser(f"{u.last_name} {u.first_name}")] = u
+        matricule = getattr(getattr(u, 'agent_profile', None), 'matricule', None)
+        if matricule:
+            index_candidats[_normaliser(matricule)] = u
+
+    agents_reconnus = []
+    agents_a_resoudre = []
+
+    for valeur in valeurs_uniques:
+        agent, _err = _trouver_agent(valeur)
+        if agent:
+            agents_reconnus.append({
+                'valeur_fichier': valeur,
+                'agent_id': agent.id,
+                'agent_nom': agent.get_full_name() or agent.username,
+            })
+            continue
+
+        proches = get_close_matches(
+            _normaliser(valeur), index_candidats.keys(), n=3, cutoff=0.6
+        )
+        suggestions, vus = [], set()
+        for cle in proches:
+            u = index_candidats[cle]
+            if u.id not in vus:
+                suggestions.append({
+                    'agent_id': u.id,
+                    'agent_nom': u.get_full_name() or u.username,
+                    'username': u.username,
+                    'matricule': getattr(getattr(u, 'agent_profile', None), 'matricule', None),
+                })
+                vus.add(u.id)
+
+        agents_a_resoudre.append({'valeur_fichier': valeur, 'suggestions': suggestions})
+
+    return Response({
+        'import_id': import_id,
+        'agents_reconnus': agents_reconnus,
+        'agents_a_resoudre': agents_a_resoudre,
+    })
+
+
+@extend_schema(
+    tags=['Import Excel'],
+    summary="Étape 3/3 (si nécessaire) : résoudre les agents non reconnus",
+    description=(
+        "Pour chaque valeur signalée par verifier_agents_excel dans "
+        "`agents_a_resoudre`, le superviseur envoie soit `agent_id` "
+        "(il confirme que c'est bien un agent existant), soit `creer` "
+        "(il n'existe pas encore, on le crée). Renvoie un mapping "
+        "`resolutions_agents` à réutiliser tel quel dans "
+        "confirmer_import_excel (paramètre `resolutions_agents`) pour "
+        "que ces valeurs soient reconnues lors de l'import final."
+    ),
+    request={'application/json': {
+        'type': 'object',
+        'properties': {
+            'resolutions': {
+                'type': 'array',
+                'items': {
+                    'type': 'object',
+                    'properties': {
+                        'valeur_fichier': {'type': 'string'},
+                        'agent_id': {'type': 'integer'},
+                        'creer': {
+                            'type': 'object',
+                            'properties': {
+                                'first_name': {'type': 'string'},
+                                'last_name': {'type': 'string'},
+                                'matricule': {'type': 'string'},
+                                'phone': {'type': 'string'},
+                                'zone_intervention': {'type': 'string'},
+                            },
+                        },
+                    },
+                },
+            },
+        },
+        'required': ['resolutions'],
+    }},
+    responses={200: OpenApiTypes.OBJECT, 400: OpenApiTypes.OBJECT},
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def resoudre_agents_excel(request):
+    """
+    Étape 3/3 (si nécessaire) : traite les choix du superviseur pour
+    les valeurs "agent" non reconnues — confirmation d'une suggestion
+    existante, ou création d'un nouvel agent à la volée.
+    """
+    if request.user.role not in ['admin', 'manager']:
+        return Response({'error': 'Permission refusée'}, status=status.HTTP_403_FORBIDDEN)
+
+    resolutions = request.data.get('resolutions') or []
+    if not resolutions:
+        return Response(
+            {'error': "Le champ 'resolutions' est requis (liste)"},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    mapping_final = {}
+    comptes_crees = []
+    erreurs = []
+
+    for item in resolutions:
+        valeur = item.get('valeur_fichier')
+        if not valeur:
+            erreurs.append("Entrée sans 'valeur_fichier', ignorée")
+            continue
+        valeur_norm = _normaliser(valeur)
+
+        # Cas 1 : confirmation d'un agent existant
+        if item.get('agent_id'):
+            try:
+                agent = User.objects.get(id=item['agent_id'], role='agent')
+            except User.DoesNotExist:
+                erreurs.append(f"'{valeur}': agent_id {item['agent_id']} introuvable")
+                continue
+            mapping_final[valeur_norm] = agent.id
+            continue
+
+        # Cas 2 : création d'un nouvel agent
+        creer = item.get('creer')
+        if creer:
+            matricule = (creer.get('matricule') or '').strip()
+            first_name = (creer.get('first_name') or '').strip()
+            last_name = (creer.get('last_name') or '').strip()
+
+            if not (matricule and first_name and last_name):
+                erreurs.append(
+                    f"'{valeur}': first_name, last_name et matricule sont "
+                    f"requis pour créer un agent"
+                )
+                continue
+            if AgentProfile.objects.filter(matricule__iexact=matricule).exists():
+                erreurs.append(f"'{valeur}': le matricule '{matricule}' existe déjà")
+                continue
+
+            username_base = _normaliser(f"{first_name}.{last_name}").replace(' ', '')
+            username = username_base or f"agent{uuid.uuid4().hex[:6]}"
+            suffixe = 1
+            while User.objects.filter(username=username).exists():
+                suffixe += 1
+                username = f"{username_base}{suffixe}"
+
+            mot_de_passe_temporaire = secrets.token_urlsafe(8)
+
+            nouvel_agent = User(
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                phone=creer.get('phone', ''),
+                role='agent',
+                is_active_agent=True,
+            )
+            nouvel_agent.set_password(mot_de_passe_temporaire)
+            nouvel_agent.save()
+
+            AgentProfile.objects.create(
+                user=nouvel_agent,
+                matricule=matricule,
+                zone_intervention=creer.get('zone_intervention', ''),
+            )
+
+            mapping_final[valeur_norm] = nouvel_agent.id
+            comptes_crees.append({
+                'valeur_fichier': valeur,
+                'agent_id': nouvel_agent.id,
+                'username': username,
+                # Renvoyé une seule fois ici : à transmettre à l'agent
+                # (l'API ne le renverra plus jamais en clair ensuite).
+                'mot_de_passe_temporaire': mot_de_passe_temporaire,
+            })
+            continue
+
+        erreurs.append(f"'{valeur}': fournir soit agent_id, soit creer")
+
+    return Response({
+        'resolutions_agents': mapping_final,
+        'comptes_crees': comptes_crees,
+        'erreurs': erreurs,
+    })
+
+
+@extend_schema(
+    tags=['Import Excel'],
     summary="Étape 2/2 : confirmer le mapping et créer les tâches",
     description=(
         "Le superviseur choisit quelle colonne identifie l'agent "
@@ -543,6 +836,9 @@ def confirmer_import_excel(request):
     mapping = request.data.get('mapping') or {}
     colonnes_obligatoires = request.data.get('colonnes_obligatoires') or []
     colonnes_visibles_mobile = request.data.get('colonnes_visibles_mobile') or []
+    # Résolutions manuelles issues de resoudre_agents_excel (étape 3),
+    # facultatif si tous les agents ont été reconnus automatiquement.
+    resolutions_agents = request.data.get('resolutions_agents') or {}
 
     if not import_id:
         return Response({'error': "import_id manquant"}, status=status.HTTP_400_BAD_REQUEST)
@@ -607,8 +903,9 @@ def confirmer_import_excel(request):
             erreurs.append(f"Ligne {ligne_num}: colonnes obligatoires vides {manquantes}")
             continue
 
-        # Résolution de l'agent (username, matricule, ou nom complet)
-        agent, err = _trouver_agent(row.get(mapping['agent']))
+        # Résolution de l'agent (username, matricule, nom complet, ou
+        # résolution manuelle fournie par le gestionnaire à l'étape 3)
+        agent, err = _trouver_agent(row.get(mapping['agent']), resolutions_agents)
         if err:
             erreurs.append(f"Ligne {ligne_num}: {err}")
             continue
