@@ -18,6 +18,9 @@ SECRET_KEY = config('SECRET_KEY')  # pas de défaut : obligatoire en prod
 ALLOWED_HOSTS = config('ALLOWED_HOSTS', cast=Csv())  # pas de défaut : obligatoire
 
 # Database - PostgreSQL (aucun identifiant par défaut, doit venir du .env)
+# sslmode='require' par défaut : les Postgres managés modernes (Neon,
+# Render, Supabase...) exigent TLS. Mettre DB_SSLMODE=disable seulement
+# pour une base Postgres locale sans TLS configuré.
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -26,13 +29,16 @@ DATABASES = {
         'PASSWORD': config('DB_PASSWORD'),
         'HOST': config('DB_HOST', default='localhost'),
         'PORT': config('DB_PORT', default='5432'),
+        'OPTIONS': {'sslmode': config('DB_SSLMODE', default='require')},
     }
 }
 
-# Static files - DocumentRoot Apache (chemin par défaut cohérent avec
-# deploy/debian13/install.sh, surchargeable si autre config serveur)
-STATIC_ROOT = config('STATIC_ROOT', default='/var/www/html/seeg/static')
-MEDIA_ROOT = config('MEDIA_ROOT', default='/var/www/html/seeg/media')
+# Static/media files : STATIC_ROOT a un défaut universel dans settings.py
+# de base (BASE_DIR/staticfiles), servi par WhiteNoise — fonctionne aussi
+# bien sur Render que derrière Apache (deploy/debian13). Surchargez
+# STATIC_ROOT/MEDIA_ROOT via .env uniquement si vous avez un besoin
+# spécifique (ex: DocumentRoot Apache dédié).
+MEDIA_ROOT = config('MEDIA_ROOT', default=str(BASE_DIR / 'media'))
 
 # CORS / CSRF : pas de défaut = obligatoire en prod (le domaine du front
 # React et de l'API doivent être explicitement déclarés, jamais devinés)
