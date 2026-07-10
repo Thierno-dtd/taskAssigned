@@ -21,6 +21,7 @@ from rest_framework import status
 from drf_spectacular.utils import extend_schema, OpenApiTypes, OpenApiExample, OpenApiParameter
 
 from accounts.models import User, AgentProfile
+from accounts.emails import envoyer_identifiants_par_email
 from tasks.models import Semaine, Tache, SousTache, ImportLot
 
 
@@ -653,6 +654,7 @@ def verifier_agents_excel(request):
                                 'first_name': {'type': 'string'},
                                 'last_name': {'type': 'string'},
                                 'matricule': {'type': 'string'},
+                                'email': {'type': 'string', 'description': "requis pour recevoir le mot de passe temporaire"},
                                 'phone': {'type': 'string'},
                                 'zone_intervention': {'type': 'string'},
                             },
@@ -734,9 +736,12 @@ def resoudre_agents_excel(request):
                 username=username,
                 first_name=first_name,
                 last_name=last_name,
+                email=creer.get('email', ''),
                 phone=creer.get('phone', ''),
                 role='agent',
                 is_active_agent=True,
+                must_change_password=True,
+                phone_verifie=False,
             )
             nouvel_agent.set_password(mot_de_passe_temporaire)
             nouvel_agent.save()
@@ -747,15 +752,21 @@ def resoudre_agents_excel(request):
                 zone_intervention=creer.get('zone_intervention', ''),
             )
 
+            email_envoye = envoyer_identifiants_par_email(nouvel_agent, mot_de_passe_temporaire)
+
             mapping_final[valeur_norm] = nouvel_agent.id
-            comptes_crees.append({
+            compte_cree = {
                 'valeur_fichier': valeur,
                 'agent_id': nouvel_agent.id,
                 'username': username,
-                # Renvoyé une seule fois ici : à transmettre à l'agent
-                # (l'API ne le renverra plus jamais en clair ensuite).
-                'mot_de_passe_temporaire': mot_de_passe_temporaire,
-            })
+                'email_envoye': email_envoye,
+            }
+            # Filet de sécurité si l'email n'a pas pu être envoyé (pas
+            # d'email fourni, SMTP en échec...) : sans ça, personne ne
+            # connaîtrait le mot de passe de ce nouvel agent.
+            if not email_envoye:
+                compte_cree['mot_de_passe_temporaire'] = mot_de_passe_temporaire
+            comptes_crees.append(compte_cree)
             continue
 
         erreurs.append(f"'{valeur}': fournir soit agent_id, soit creer")

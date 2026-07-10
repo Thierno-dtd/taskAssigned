@@ -8,34 +8,51 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .models import AgentProfile
-from .permissions import IsAdmin
+from .permissions import IsAdmin, IsManagerOrAdmin
+from .emails import envoyer_identifiants_par_email
 from .serializers import (
     UserSerializer, AgentProfileSerializer,
     UserCreateSerializer, ManagerCreateSerializer,
-    RoleChangeSerializer
+    RoleChangeSerializer, ChangePasswordSerializer
 )
 
 User = get_user_model()
 
 
 class RegisterView(generics.CreateAPIView):
+    """
+    Création d'un compte agent. RÉSERVÉ à un manager ou un admin
+    authentifié (IsManagerOrAdmin) — il n'y a plus d'auto-inscription
+    publique : c'est le manager qui crée les comptes de ses agents.
+
+    Le mot de passe est généré automatiquement et envoyé par email à
+    l'agent. Aucun token n'est renvoyé ici (ce n'est pas l'agent qui
+    fait la requête, mais le manager qui le crée) — l'agent se
+    connectera lui-même ensuite via /login/ avec le mot de passe reçu
+    par email, puis devra vérifier son téléphone (OTP) et changer ce
+    mot de passe.
+    """
     queryset = User.objects.all()
     serializer_class = UserCreateSerializer
-    permission_classes = [permissions.AllowAny]
+    permission_classes = [IsManagerOrAdmin]
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
 
-        # Generate tokens
-        refresh = RefreshToken.for_user(user)
+        mot_de_passe_temporaire = user._mot_de_passe_temporaire
+        email_envoye = envoyer_identifiants_par_email(user, mot_de_passe_temporaire)
 
-        return Response({
-            'user': UserSerializer(user).data,
-            'refresh': str(refresh),
-            'access': str(refresh.access_token),
-        }, status=status.HTTP_201_CREATED)
+        reponse = UserSerializer(user).data
+        reponse['email_envoye'] = email_envoye
+        # Filet de sécurité si l'email n'a pas pu être envoyé (SMTP en
+        # échec, email invalide...) : sans ça, personne ne connaîtrait
+        # le mot de passe de ce nouvel agent.
+        if not email_envoye:
+            reponse['mot_de_passe_temporaire'] = mot_de_passe_temporaire
+
+        return Response(reponse, status=status.HTTP_201_CREATED)
 
 
 class CustomTokenObtainPairView(TokenObtainPairView):
@@ -92,7 +109,16 @@ class ManagerCreateView(generics.CreateAPIView):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
-        return Response(UserSerializer(user).data, status=status.HTTP_201_CREATED)
+
+        mot_de_passe_temporaire = user._mot_de_passe_temporaire
+        email_envoye = envoyer_identifiants_par_email(user, mot_de_passe_temporaire)
+
+        reponse = UserSerializer(user).data
+        reponse['email_envoye'] = email_envoye
+        if not email_envoye:
+            reponse['mot_de_passe_temporaire'] = mot_de_passe_temporaire
+
+        return Response(reponse, status=status.HTTP_201_CREATED)
 
 
 class ChangeUserRoleView(APIView):
@@ -124,3 +150,31 @@ class ChangeUserRoleView(APIView):
         user.save(update_fields=['role'])
 
         return Response(UserSerializer(user).data)
+
+
+class ChangePasswordView(APIView):
+    """
+    Changement de mot de passe. Volontairement en dehors du blocage
+    global IsFullyVerified (voir settings.py) : déclare explicitement
+    permission_classes=[IsAuthenticated] pour rester accessible même à
+    un utilisateur dont must_change_password=True — sinon il serait
+    bloqué partout sans pouvoir en sortir.
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        serializer = ChangePasswordSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        user = request.user
+        if not user.check_password(serializer.validated_data['ancien_mot_de_passe']):
+            return Response(
+                {'error': "Ancien mot de passe incorrect."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        user.set_password(serializer.validated_data['nouveau_mot_de_passe'])
+        user.must_change_password = False
+        user.save(update_fields=['password', 'must_change_password'])
+
+        return Response({'message': 'Mot de passe changé avec succès.'})

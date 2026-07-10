@@ -183,6 +183,92 @@ def resend_otp(request):
 
 
 @api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([OtpRateThrottle])
+def request_phone_verification(request):
+    """
+    Envoie un code OTP par SMS au numéro de l'utilisateur CONNECTÉ, pour
+    vérifier son téléphone à la première connexion (après login
+    username/password). Contrairement à request_otp (qui sert de
+    méthode de connexion alternative), celui-ci ne renvoie pas de
+    tokens : il vérifie juste le numéro d'un utilisateur déjà
+    authentifié.
+    """
+    user = request.user
+
+    if not user.phone:
+        return Response(
+            {'error': "Aucun numéro de téléphone associé à ce compte."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if user.phone_verifie:
+        return Response({'message': 'Ce numéro est déjà vérifié.'})
+
+    cache_key_attempts = f"phone_verif_attempts_{user.id}"
+    attempts = cache.get(cache_key_attempts, 0)
+    if attempts >= MAX_OTP_ATTEMPTS:
+        return Response(
+            {'error': 'Trop de tentatives. Réessayez dans 15 minutes.'},
+            status=status.HTTP_429_TOO_MANY_REQUESTS
+        )
+
+    otp_code = generate_otp()
+    cache.set(f"phone_verif_{user.id}", {
+        'code': otp_code,
+        'created_at': datetime.now().isoformat()
+    }, timeout=60 * OTP_EXPIRY_MINUTES)
+    cache.set(cache_key_attempts, attempts + 1, timeout=900)
+
+    try:
+        envoyer_sms(user.phone, f"Votre code de vérification SEEG : {otp_code} (valable {OTP_EXPIRY_MINUTES} min)")
+    except SmsSendError:
+        return Response(
+            {'error': "Le service SMS est momentanément indisponible. Réessayez dans quelques instants."},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE
+        )
+
+    return Response({
+        'message': 'Code de vérification envoyé par SMS.',
+        'expires_in': f"{OTP_EXPIRY_MINUTES} minutes"
+    })
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@throttle_classes([OtpRateThrottle])
+def verify_phone(request):
+    """
+    Vérifie le code reçu par SMS pour l'utilisateur connecté.
+    Body: { "otp": "123456" }
+    Marque phone_verifie=True une fois validé.
+    """
+    otp_code = request.data.get('otp')
+    if not otp_code:
+        return Response({'error': 'Code OTP requis'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user = request.user
+    cache_key = f"phone_verif_{user.id}"
+    otp_data = cache.get(cache_key)
+
+    if not otp_data:
+        return Response(
+            {'error': 'Code expiré ou inexistant, redemandez-en un.'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    if otp_data['code'] != otp_code:
+        return Response({'error': 'Code incorrect.'}, status=status.HTTP_400_BAD_REQUEST)
+
+    user.phone_verifie = True
+    user.save(update_fields=['phone_verifie'])
+    cache.delete(cache_key)
+    cache.delete(f"phone_verif_attempts_{user.id}")
+
+    return Response({'message': 'Numéro de téléphone vérifié avec succès.'})
+
+
+@api_view(['POST'])
 @permission_classes([AllowAny])
 @throttle_classes([OtpRateThrottle])
 def verify_otp_and_login(request):

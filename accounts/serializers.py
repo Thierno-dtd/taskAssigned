@@ -15,13 +15,20 @@ class UserSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'username', 'email', 'first_name', 'last_name',
             'role', 'role_display', 'phone', 'is_active_agent',
-            'date_joined'
+            'must_change_password', 'phone_verifie', 'date_joined'
         ]
-        # 'role' en lecture seule ici : ce serializer est utilisé pour
-        # l'auto-édition du profil (UserProfileView.put) et l'affichage.
-        # Le rôle ne doit JAMAIS être modifiable par ce biais — seul un
-        # admin peut le changer, via ChangeUserRoleView (voir plus bas).
-        read_only_fields = ['id', 'date_joined', 'role']
+        # 'role', 'must_change_password' et 'phone_verifie' en lecture
+        # seule ici : ce serializer sert à l'auto-édition du profil
+        # (UserProfileView.put) et à l'affichage. Aucun des trois ne
+        # doit être modifiable par ce biais :
+        # - role -> ChangeUserRoleView (admin uniquement)
+        # - must_change_password -> ChangePasswordView (après vérif de
+        #   l'ancien mot de passe)
+        # - phone_verifie -> verify_phone (après vérif du code OTP)
+        read_only_fields = [
+            'id', 'date_joined', 'role',
+            'must_change_password', 'phone_verifie'
+        ]
 
 
 class AgentProfileSerializer(serializers.ModelSerializer):
@@ -37,61 +44,76 @@ class AgentProfileSerializer(serializers.ModelSerializer):
 
 class UserCreateSerializer(serializers.ModelSerializer):
     """
-    Utilisé pour la création de compte. 'role' est volontairement absent
-    des champs éditables : un utilisateur ne doit jamais pouvoir
-    s'attribuer lui-même un rôle (admin/manager) à l'inscription.
-    Le rôle est forcé côté serveur (voir create()) ou fixé séparément
-    par un admin via un endpoint dédié et protégé.
+    Création d'un compte agent PAR UN MANAGER OU UN ADMIN (voir
+    permission IsManagerOrAdmin sur RegisterView) — il n'y a plus
+    d'auto-inscription publique.
+
+    Pas de champ 'password' : le mot de passe est généré
+    automatiquement côté serveur et envoyé par email (voir
+    RegisterView.create()). 'email' et 'phone' sont obligatoires : le
+    premier pour recevoir le mot de passe temporaire, le second pour la
+    vérification OTP à la première connexion.
+
+    'role' est volontairement absent des champs éditables : forcé à
+    'agent' côté serveur (voir create()).
     """
-    password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(required=True)
+    phone = serializers.CharField(required=True)
 
     class Meta:
         model = User
         fields = [
-            'id', 'username', 'email', 'password',
+            'id', 'username', 'email',
             'first_name', 'last_name', 'phone'
         ]
 
-    def validate_password(self, value):
-        from django.contrib.auth.password_validation import validate_password
-        validate_password(value)
-        return value
-
     def create(self, validated_data):
-        password = validated_data.pop('password')
+        import secrets
+        mot_de_passe_temporaire = secrets.token_urlsafe(8)
+
         user = User(**validated_data)
         user.role = 'agent'  # rôle forcé, jamais fourni par le client
-        user.set_password(password)
+        user.must_change_password = True
+        user.phone_verifie = False
+        user.set_password(mot_de_passe_temporaire)
         user.save()
+
+        # Attaché temporairement à l'instance (pas en base) pour que la
+        # vue puisse l'envoyer par email et, en secours, le renvoyer une
+        # fois dans la réponse API si l'envoi échoue.
+        user._mot_de_passe_temporaire = mot_de_passe_temporaire
         return user
 
 
 class ManagerCreateSerializer(serializers.ModelSerializer):
     """
-    Création d'un compte manager. Réservé à l'admin (voir
-    ManagerCreateView / permission IsAdmin). Le rôle est forcé à
-    'manager' côté serveur, jamais fourni par le client.
+    Création d'un compte manager par l'admin (voir ManagerCreateView /
+    permission IsAdmin). Même logique que UserCreateSerializer : pas de
+    mot de passe saisi, généré et envoyé par email. Rôle forcé à
+    'manager' côté serveur.
     """
-    password = serializers.CharField(write_only=True)
+    email = serializers.EmailField(required=True)
+    phone = serializers.CharField(required=True)
 
     class Meta:
         model = User
         fields = [
-            'id', 'username', 'email', 'password',
+            'id', 'username', 'email',
             'first_name', 'last_name', 'phone'
         ]
 
-    def validate_password(self, value):
-        from django.contrib.auth.password_validation import validate_password
-        validate_password(value)
-        return value
-
     def create(self, validated_data):
-        password = validated_data.pop('password')
+        import secrets
+        mot_de_passe_temporaire = secrets.token_urlsafe(8)
+
         user = User(**validated_data)
         user.role = 'manager'
-        user.set_password(password)
+        user.must_change_password = True
+        user.phone_verifie = False
+        user.set_password(mot_de_passe_temporaire)
         user.save()
+
+        user._mot_de_passe_temporaire = mot_de_passe_temporaire
         return user
 
 
@@ -103,6 +125,22 @@ class RoleChangeSerializer(serializers.Serializer):
     de son compte (createsuperuser), et il n'est pas censé changer.
     """
     role = serializers.ChoiceField(choices=['agent', 'manager'])
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    """
+    Changement de mot de passe. L'ancien mot de passe est toujours requis
+    (même à la première connexion : l'utilisateur le connaît, c'est
+    celui reçu par email), pour éviter qu'une session volée suffise à
+    changer le mot de passe sans le connaître.
+    """
+    ancien_mot_de_passe = serializers.CharField(write_only=True)
+    nouveau_mot_de_passe = serializers.CharField(write_only=True)
+
+    def validate_nouveau_mot_de_passe(self, value):
+        from django.contrib.auth.password_validation import validate_password
+        validate_password(value)
+        return value
 
 
 class LoginSerializer(serializers.Serializer):

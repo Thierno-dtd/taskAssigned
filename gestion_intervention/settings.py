@@ -161,6 +161,12 @@ CORS_ALLOWED_ORIGINS = config(
 )
 CORS_ALLOW_CREDENTIALS = True
 
+# Email — en dev, les emails sont juste affichés dans la console (pas de
+# vrai envoi). En prod, settings_production.py surcharge avec un vrai
+# backend SMTP configuré via les variables d'environnement.
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+DEFAULT_FROM_EMAIL = 'noreply@seeg.ga'
+
 # Cache (utilisé notamment pour stocker les codes OTP, voir accounts/otp_views.py)
 # IMPORTANT : sans REDIS_URL configuré, Django utilise un cache en mémoire
 # locale (LocMemCache) par process. En dev (1 seul process) ça marche très
@@ -246,7 +252,7 @@ REST_FRAMEWORK = {
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
-        'rest_framework.permissions.IsAuthenticated',
+        'accounts.permissions.IsFullyVerified',
     ],
     'DEFAULT_PAGINATION_CLASS': (
         'rest_framework.pagination.PageNumberPagination'

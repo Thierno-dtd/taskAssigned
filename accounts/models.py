@@ -12,6 +12,26 @@ class User(AbstractUser):
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='agent')
     phone = models.CharField(max_length=20, blank=True, null=True)
     is_active_agent = models.BooleanField(default=True)
+    must_change_password = models.BooleanField(
+        default=False,
+        help_text=(
+            "True tant que l'utilisateur n'a pas changé le mot de passe "
+            "temporaire généré à la création de son compte. Forcé à True "
+            "explicitement uniquement dans RegisterView/ManagerCreateView/"
+            "import Excel (comptes créés avec un mot de passe généré) — "
+            "les comptes créés autrement (createsuperuser, seed_data, "
+            "admin Django) restent à False, considérés déjà onboardés."
+        )
+    )
+    phone_verifie = models.BooleanField(
+        default=True,
+        help_text=(
+            "False uniquement pour les comptes créés avec un mot de passe "
+            "temporaire (RegisterView/ManagerCreateView/import Excel), qui "
+            "doivent vérifier leur téléphone à la première connexion. "
+            "True par défaut pour tous les autres comptes (déjà onboardés)."
+        )
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
