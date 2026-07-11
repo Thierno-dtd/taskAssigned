@@ -9,6 +9,36 @@ from accounts.models import User, AgentProfile
 from tasks.models import Semaine, Tache, SousTache
 from reports.models import RapportExecution
 
+QUARTIERS_LIBREVILLE = [
+    ("Glass, Libreville",         0.3925, 9.4536),
+    ("Nombakélé, Libreville",     0.3850, 9.4650),
+    ("Quartier Louis, Libreville",0.3760, 9.4700),
+    ("Nkembo, Libreville",        0.3980, 9.4850),
+    ("Oloumi, Libreville",        0.3700, 9.4950),
+    ("Akébé, Libreville",         0.3850, 9.5000),
+    ("Lalala, Libreville",        0.3600, 9.5100),
+    ("Nzeng-Ayong, Libreville",   0.3550, 9.5200),
+    ("Sablière, Libreville",      0.3900, 9.4600),
+    ("Charbonnages, Libreville",  0.4100, 9.4600),
+    ("PK8, Libreville",           0.3400, 9.5150),
+    ("PK12, Libreville",          0.3100, 9.5300),
+    ("Owendo Centre",             0.2900, 9.5050),
+    ("Cité Basse, Owendo",        0.2850, 9.4950),
+    ("Angondje, Akanda",          0.4700, 9.4650),
+    ("Akanda Centre",             0.5100, 9.5050),
+    ("Akanda Plage",              0.5300, 9.4850),
+]
+
+
+def _position_realiste():
+    """Choisit un quartier réel et ajoute un petit décalage (~200-300m max)
+    pour éviter que toutes les tâches d'un même quartier soient au même
+    point exact, sans jamais sortir sur l'estuaire/l'océan."""
+    nom, lat, lon = random.choice(QUARTIERS_LIBREVILLE)
+    lat += random.uniform(-0.0025, 0.0025)
+    lon += random.uniform(-0.0025, 0.0025)
+    return nom, Decimal(str(round(lat, 6))), Decimal(str(round(lon, 6)))
+
 
 class Command(BaseCommand):
     help = 'Génère des données de test complètes'
@@ -30,7 +60,7 @@ class Command(BaseCommand):
 
         self.stdout.write(self.style.SUCCESS('OK Donnees de test creees avec succes!'))
         self.print_summary()
-
+    
     def create_users(self):
         self.stdout.write('>> Creation des utilisateurs...')
 
@@ -171,6 +201,8 @@ class Command(BaseCommand):
                 if status == 'completed':
                     date_realisation = date_debut + timedelta(hours=random.randint(1, 4))
 
+                adresse, gps_latitude, gps_longitude = _position_realiste()
+
                 tache = Tache.objects.create(
                     titre=f"{tache_type[0]} #{semaine.numero}-{i+1}",
                     description=tache_type[1],
@@ -182,7 +214,10 @@ class Command(BaseCommand):
                     date_debut_prevue=date_debut,
                     date_fin_prevue=date_debut + timedelta(hours=4),
                     date_realisation=date_realisation,
-                    created_by=random.choice([self.admin, self.manager])
+                    created_by=random.choice([self.admin, self.manager]),
+                    gps_latitude=gps_latitude,
+                    gps_longitude=gps_longitude,
+                    adresse_complet=adresse,
                 )
                 self.taches.append(tache)
 
