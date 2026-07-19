@@ -156,7 +156,7 @@ AUTH_USER_MODEL = 'accounts.User'
 # CORS Settings (surchargé par CORS_ALLOWED_ORIGINS dans .env en prod)
 CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
-    default='http://localhost:3000,http://localhost:8080,http://127.0.0.1:3000,http://127.0.0.1:8080',
+    default='*',
     cast=Csv()
 )
 CORS_ALLOW_CREDENTIALS = True
