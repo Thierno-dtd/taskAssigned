@@ -154,11 +154,13 @@ MEDIA_ROOT = BASE_DIR / 'media'
 AUTH_USER_MODEL = 'accounts.User'
 
 # CORS Settings (surchargé par CORS_ALLOWED_ORIGINS dans .env en prod)
-CORS_ALLOWED_ORIGINS = config(
+"""CORS_ALLOWED_ORIGINS = config(
     'CORS_ALLOWED_ORIGINS',
     default='*',
     cast=Csv()
-)
+)"""
+
+CORS_ALLOW_ALL_ORIGINS = True
 CORS_ALLOW_CREDENTIALS = True
 
 # Email — en dev, les emails sont juste affichés dans la console (pas de
