@@ -96,7 +96,7 @@ class Command(BaseCommand):
 
         # Agents
         agents_data = [
-            {'username': 'agent1', 'first_name': 'Jean', 'last_name': 'Dupont',
+            {'username': 'joel', 'first_name': 'joel', 'last_name': 'Wilson',
              'phone': '+241 06 12 34 56', 'matricule': 'AG001', 'zone': 'Libreville Nord'},
             {'username': 'agent2', 'first_name': 'Marie', 'last_name': 'Essono',
              'phone': '+241 06 23 45 67', 'matricule': 'AG002', 'zone': 'Libreville Centre'},
